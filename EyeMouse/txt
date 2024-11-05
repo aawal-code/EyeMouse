@@ -1,0 +1,72 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import threading
+import cv2
+import mediapipe as mp
+import pyautogui
+
+app = FastAPI()
+
+cam = cv2.VideoCapture(0)
+face_mesh = mp.solutions.face_mesh.FaceMesh(refine_landmarks=True)
+screen_w, screen_h = pyautogui.size()
+
+sensitivity = 1.5
+is_running = False
+
+@app.get("/")
+async def read_root():
+    return {"message": "Hello, World!"}
+
+@app.post("/set_sensitivity")
+async def set_sensitivity(request: Request):
+    global sensitivity
+    data = await request.json()
+    sensitivity = float(data["sensitivity"])
+    return JSONResponse(content={"status": "success"})
+
+@app.post("/start_stop")
+async def start_stop(request: Request):
+    global is_running
+    data = await request.json()
+    is_running = data["is_running"]
+    return JSONResponse(content={"status": "success"})
+
+def track_eye_movement():
+    global is_running, cam, face_mesh, screen_w, screen_h, sensitivity
+    safe_margin = 20
+
+    while True:
+        if is_running:
+            _, frame = cam.read()
+            frame = cv2.flip(frame, 1)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            output = face_mesh.process(rgb_frame)
+            landmark_points = output.multi_face_landmarks
+            frame_h, frame_w, _ = frame.shape
+
+            if landmark_points:
+                landmarks = landmark_points[0].landmark
+                pupil = landmarks[468]
+                x = int(pupil.x * frame_w)
+                y = int(pupil.y * frame_h)
+                cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
+                screen_x = screen_w / frame_w * x * sensitivity
+                screen_y = screen_h / frame_h * y * sensitivity
+
+                if safe_margin < screen_x < screen_w - safe_margin and safe_margin < screen_y < screen_h - safe_margin:
+                    pyautogui.moveTo(screen_x, screen_y)
+
+            cv2.imshow('Eye Controlled Mouse', frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+    cam.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    t = threading.Thread(target=track_eye_movement)
+    t.daemon = True
+    t.start()
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
